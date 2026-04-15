@@ -1,0 +1,723 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title><%= roomName %> - Secure Chat Room</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+  <div class="chatroom-container">
+    <!-- Sidebar -->
+    <aside class="chatroom-sidebar">
+      <div class="sidebar-header">
+        <h2>🔒 <%= roomName %></h2>
+        <p class="room-id">ID: <code><%= roomId %></code></p>
+      </div>
+
+      <div class="sidebar-section">
+        <h3>👥 Users Online</h3>
+        <ul id="usersList" class="users-list">
+          <% users.forEach(user => { %>
+            <li class="user-item <%= user === username ? 'current-user' : '' %>">
+              <span class="user-dot"></span>
+              <span class="user-name"><%= user %></span>
+              <% if (user === username) { %>
+                <span class="badge">You</span>
+              <% } %>
+            </li>
+          <% }); %>
+        </ul>
+      </div>
+
+      <div class="sidebar-section">
+        <h3>🔐 Encryption Info</h3>
+        <div class="encryption-info">
+          <p><strong>Algorithm:</strong> AES-256-GCM</p>
+          <p><strong>Room Key:</strong> <code id="keyStatus">Loading...</code></p>
+          <button id="newKeyBtn" class="btn btn-small" style="display: none;">Request New Key</button>
+          <button id="keyStatsBtn" class="btn btn-small" onclick="showKeyStats()">📊 Key Stats</button>
+        </div>
+      </div>
+
+      <div class="sidebar-footer">
+        <button id="leaveRoomBtn" class="btn btn-danger" onclick="leaveRoom()">
+          Leave Room
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main Chat Area -->
+    <main class="chatroom-main">
+      <!-- Header -->
+      <header class="chatroom-header">
+        <div class="header-info">
+          <h1><%= roomName %></h1>
+          <p>Encrypted group chat with <%= users.length %> users</p>
+        </div>
+        <div class="header-actions">
+          <span id="typingIndicator" class="typing-indicator" style="display: none;">
+            <span>Someone is typing</span>
+            <span class="dots"><span>.</span><span>.</span><span>.</span></span>
+          </span>
+        </div>
+      </header>
+
+      <!-- Messages Area -->
+      <section class="messages-container">
+        <div id="messagesList" class="messages-list">
+          <!-- System Messages and Chat Messages -->
+          <div class="system-message">
+            <p>🔒 Welcome to <strong><%= roomName %></strong></p>
+            <p><small>All messages are encrypted with AES-256-GCM</small></p>
+          </div>
+
+          <!-- Render existing messages -->
+          <% messages.forEach(msg => { %>
+            <div class="message-wrapper <%= msg.isPrivate ? 'private-message' : 'group-message' %>" id="msg-<%= msg._id %>">
+              <div class="message <%= msg.sender === username ? 'sent' : 'received' %>">
+                <div class="message-header">
+                  <strong><%= msg.sender %></strong>
+                  <% if (msg.isPrivate) { %>
+                    <span class="badge badge-private">🔒 Private</span>
+                  <% } %>
+                  <span class="timestamp"><%= new Date(msg.timestamp).toLocaleTimeString() %></span>
+                </div>
+
+                <!-- Show both encrypted and decrypted messages -->
+                <div class="message-content">
+                  <p class="decrypted-text" data-encrypted="<%= msg.encryptedText %>">
+                    [Decrypting...]
+                  </p>
+                </div>
+
+                <div class="message-footer">
+                  <span class="encrypted-badge" title="This message is encrypted">
+                    🔒 Encrypted
+                  </span>
+                  <button class="btn-toggle-encrypted" onclick="toggleEncrypted(this)">
+                    Show Encrypted
+                  </button>
+                </div>
+
+                <!-- Hidden encrypted text (shown on demand) -->
+                <div class="encrypted-text" style="display: none;">
+                  <pre><%= msg.encryptedText %></pre>
+                </div>
+              </div>
+            </div>
+          <% }); %>
+        </div>
+      </section>
+
+      <!-- Message Input Area -->
+      <footer class="chatroom-footer">
+        <form id="messageForm" class="message-form">
+          <!-- Message Type Selector -->
+          <div class="message-type-selector">
+            <label>Message Type:</label>
+            <select id="messageType" class="message-type-select">
+              <option value="group">📢 Group Message</option>
+              <% users.filter(u => u !== username).forEach(user => { %>
+                <option value="<%= user %>">🔒 Private: <%= user %></option>
+              <% }); %>
+            </select>
+          </div>
+
+          <!-- Message Input -->
+          <div class="input-wrapper">
+            <textarea
+              id="messageInput"
+              class="message-input"
+              placeholder="Type a message... (Ctrl+Enter to send)"
+              rows="2"
+              maxlength="1000"
+            ></textarea>
+            <button type="submit" class="btn btn-send">
+              <span class="btn-icon">📤</span> Send
+            </button>
+          </div>
+
+          <!-- Character Count -->
+          <div class="char-count">
+            <span id="charCounter">0</span> / 1000
+          </div>
+
+          <div id="messageError" class="alert alert-error" style="display: none;"></div>
+          <div id="sendingIndicator" class="loading" style="display: none;">
+            <span class="spinner"></span> Encrypting & sending...
+          </div>
+        </form>
+      </footer>
+    </main>
+  </div>
+
+  <!-- Key Stats Modal -->
+  <div id="keyStatsModal" class="modal" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>🔐 Encryption Key Statistics</h2>
+        <button class="btn-close" onclick="closeModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <p><strong>Room ID:</strong> <code><%= roomId %></code></p>
+        <p><strong>Algorithm:</strong> AES-256-GCM</p>
+        <p><strong>Key Size:</strong> 256 bits (32 bytes)</p>
+        <p><strong>IV Size:</strong> 128 bits (16 bytes per message)</p>
+        <p><strong>Auth Tag Size:</strong> 128 bits (16 bytes)</p>
+        <p><strong>Key Location:</strong> Server memory (volatile storage)</p>
+        <p><strong>Users in Room:</strong> <%= users.length %></p>
+
+        <h3>Security Notes:</h3>
+        <ul>
+          <li>✓ Each message has a unique IV (Initialization Vector)</li>
+          <li>✓ Authenticated encryption prevents tampering</li>
+          <li>✓ Keys are not stored in database</li>
+          <li>✓ Private messages are encrypted end-to-end</li>
+          <li>⚠️ Keys are lost if server restarts (use KMS in production)</li>
+          <li>⚠️ For enhanced security, use Diffie-Hellman key exchange</li>
+        </ul>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" onclick="closeModal()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Overlay for Modal -->
+  <div id="modalOverlay" class="modal-overlay" onclick="closeModal()" style="display: none;"></div>
+
+  <script>
+    // ===== INITIALIZATION =====
+    const socket = io();
+    const roomId = '<%= roomId %>';
+    const username = '<%= username %>';
+    const users = <%- JSON.stringify(users) %>;
+    const pageEncryptionKey = '<%= encryptionKeyHex || "" %>';
+
+    let encryptionKey = null;
+    let encryptionKeyBuffer = null;
+    let isConnected = false;
+
+    console.log('=== CHAT ROOM INITIALIZATION ===');
+    console.log('Username:', username);
+    console.log('Room ID:', roomId);
+    console.log('Users in room:', users);
+
+    // ===== CRYPTO FUNCTIONS (Client-Side) =====
+
+    /**
+     * Convert hex string to ArrayBuffer
+     * Required for Web Crypto API
+     */
+    function hexToBuffer(hex) {
+      const bytes = [];
+      for (let i = 0; i < hex.length; i += 2) {
+        bytes.push(parseInt(hex.substr(i, 2), 16));
+      }
+      return new Uint8Array(bytes);
+    }
+
+    /**
+     * Convert ArrayBuffer to hex string
+     */
+    function bufferToHex(buffer) {
+      return Array.from(new Uint8Array(buffer))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join('');
+    }
+
+    /**
+     * DECRYPT MESSAGE (Client-side)
+     * 
+     * Takes encrypted message from server and decrypts it
+     * 
+     * Format of encrypted: iv:authTag:encryptedData (hex)
+     * 
+     * Uses SubtleCrypto (Web Crypto API) for AES-GCM decryption
+     */
+    async function decryptMessageClient(encryptedData) {
+      if (!encryptionKeyBuffer) {
+        console.error('Encryption key not available');
+        return '[Decryption failed: Key not loaded]';
+      }
+
+      try {
+        // Parse encrypted data
+        const parts = encryptedData.split(':');
+        if (parts.length !== 3) {
+          throw new Error('Invalid encrypted data format');
+        }
+
+        const iv = hexToBuffer(parts[0]);
+        const authTag = hexToBuffer(parts[1]);
+        const encryptedBytes = hexToBuffer(parts[2]);
+
+        // Combine encrypted data with auth tag (required by Web Crypto API)
+        const combinedData = new Uint8Array(encryptedBytes.length + authTag.length);
+        combinedData.set(encryptedBytes);
+        combinedData.set(authTag, encryptedBytes.length);
+
+        // Import key using Web Crypto API
+        const key = await window.crypto.subtle.importKey(
+          'raw',
+          encryptionKeyBuffer,
+          { name: 'AES-GCM' },
+          false,
+          ['decrypt']
+        );
+
+        // Decrypt
+        const decrypted = await window.crypto.subtle.decrypt(
+          { name: 'AES-GCM', iv: iv },
+          key,
+          combinedData
+        );
+
+        // Convert to string
+        const decoder = new TextDecoder('utf-8');
+        return decoder.decode(decrypted);
+
+      } catch (error) {
+        console.error('Decryption error:', error);
+        return '[Decryption failed: ' + error.message + ']';
+      }
+    }
+
+    // ===== SOCKET.IO CONNECTION =====
+
+    socket.on('connect', () => {
+      console.log('✓ Connected to server');
+      isConnected = true;
+
+      // Send join-room event
+      socket.emit('join-room', {
+        roomId,
+        username,
+        encryptionKey: sessionStorage.getItem('encryptionKey')
+      });
+    });
+
+    socket.on('connect_error', (error) => {
+      console.error('Connection error:', error);
+      showAlert('Connection error. Please refresh the page.', 'error');
+    });
+
+    /**
+     * RECEIVE_MESSAGE EVENT
+     * 
+     * Server sends encrypted message to clients
+     * Client decrypts it using the stored encryption key
+     */
+    socket.on('receive-message', async (message) => {
+      console.log('[MESSAGE] Received message from', message.sender);
+
+      // For private messages, server sends decrypted form
+      // For group messages, we need to decrypt
+      let decryptedText;
+
+      if (message.decryptedText) {
+        // Already decrypted (private message to us)
+        decryptedText = message.decryptedText;
+      } else {
+        // Need to decrypt
+        decryptedText = await decryptMessageClient(message.encryptedText);
+      }
+
+      // Display message
+      displayMessage({
+        _id: message._id,
+        sender: message.sender,
+        receiver: message.receiver,
+        decryptedText: decryptedText,
+        encryptedText: message.encryptedText,
+        isPrivate: message.isPrivate,
+        timestamp: new Date(message.timestamp)
+      });
+    });
+
+    /**
+     * USER_JOINED EVENT
+     * Display system message when user joins
+     */
+    socket.on('user-joined', (data) => {
+      console.log('[SYSTEM] User joined:', data.username);
+      displaySystemMessage(data.message, 'join');
+      addUserToList(data.username);
+    });
+
+    /**
+     * USER_LEFT EVENT
+     * Display system message when user leaves
+     */
+    socket.on('user-left', (data) => {
+      console.log('[SYSTEM] User left:', data.username);
+      displaySystemMessage(data.message, 'leave');
+      removeUserFromList(data.username);
+    });
+
+    /**
+     * USER_TYPING EVENT
+     * Show typing indicator
+     */
+    socket.on('user-typing', (data) => {
+      if (data.isTyping && data.username !== username) {
+        showTypingIndicator(data.username);
+      } else {
+        hideTypingIndicator();
+      }
+    });
+
+    /**
+     * MESSAGE_SENT EVENT
+     * Confirmation that message was sent
+     */
+    socket.on('message-sent', (data) => {
+      console.log('[CONFIRM] Message sent, ID:', data._id);
+      document.getElementById('sendingIndicator').style.display = 'none';
+      document.getElementById('messageInput').value = '';
+      updateCharCounter();
+    });
+
+    /**
+     * KEY_RESPONSE EVENT
+     * Server responds to key request
+     */
+    socket.on('key-response', (data) => {
+      console.log('[SECURITY] Received encryption key from server');
+      if (data.encryptionKey) {
+        loadEncryptionKey(data.encryptionKey);
+      }
+    });
+
+    /**
+     * ERROR EVENT
+     * Handle errors from server
+     */
+    socket.on('error', (error) => {
+      console.error('[ERROR]', error.message);
+      showAlert('Error: ' + error.message, 'error');
+    });
+
+    // ===== ENCRYPTION KEY LOADING =====
+
+    /**
+     * Load encryption key from server response or sessionStorage
+     * 
+     * Key is converted from hex string to Uint8Array for crypto operations
+     */
+    async function loadEncryptionKey(keyHex) {
+      try {
+        if (!keyHex) {
+          // Try to get from sessionStorage
+          const storedKey = sessionStorage.getItem('encryptionKey');
+          if (storedKey) {
+            keyHex = storedKey;
+          } else {
+            throw new Error('Encryption key not available');
+          }
+        }
+
+        // Convert hex to buffer
+        encryptionKeyBuffer = hexToBuffer(keyHex);
+
+        console.log('[SECURITY] Encryption key loaded');
+        console.log('[KEY] Size: ' + encryptionKeyBuffer.length * 8 + ' bits');
+
+        document.getElementById('keyStatus').textContent = '✓ Key loaded (' + (encryptionKeyBuffer.length * 8) + '-bit)';
+
+        // Decrypt existing messages on page
+        const encryptedElements = document.querySelectorAll('.decrypted-text[data-encrypted]');
+        for (const elem of encryptedElements) {
+          const encrypted = elem.getAttribute('data-encrypted');
+          const decrypted = await decryptMessageClient(encrypted);
+          elem.textContent = decrypted;
+        }
+
+        console.log('[MESSAGES] Decrypted ' + encryptedElements.length + ' existing messages');
+
+      } catch (error) {
+        console.error('[ERROR] Failed to load encryption key:', error);
+        document.getElementById('keyStatus').textContent = '❌ Key failed to load';
+        showAlert('Failed to load encryption key: ' + error.message, 'error');
+      }
+    }
+
+    // ===== MESSAGE SENDING =====
+
+    /**
+     * SEND MESSAGE HANDLER
+     * 
+     * Encryption is done on SERVER side (see server.js)
+     * Client sends plaintext to server with metadata
+     * Server encrypts and broadcasts to room
+     */
+    document.getElementById('messageForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+
+      if (!isConnected) {
+        showAlert('Not connected to server', 'error');
+        return;
+      }
+
+      const messageInput = document.getElementById('messageInput');
+      const messageType = document.getElementById('messageType').value;
+      const message = messageInput.value.trim();
+
+      if (!message) {
+        showAlert('Message cannot be empty', 'error');
+        return;
+      }
+
+      if (message.length > 1000) {
+        showAlert('Message exceeds 1000 characters', 'error');
+        return;
+      }
+
+      // Show sending indicator
+      document.getElementById('sendingIndicator').style.display = 'flex';
+      document.getElementById('messageError').style.display = 'none';
+
+      try {
+        // Determine if private or group message
+        let receiver = null;
+        let messageTypeEnum = 'group';
+
+        if (messageType !== 'group') {
+          receiver = messageType; // Username
+          messageTypeEnum = 'private';
+        }
+
+        console.log('[SEND] Sending ' + messageTypeEnum + ' message to', receiver || 'GROUP');
+
+        // Send to server (server will encrypt)
+        socket.emit('send-message', {
+          roomId,
+          sender: username,
+          message: message, // PLAINTEXT sent to server (over SSL in production)
+          receiver: receiver, // null for group, username for private
+          messageType: messageTypeEnum
+        });
+
+      } catch (error) {
+        console.error('[ERROR] Failed to send message:', error);
+        document.getElementById('messageError').style.display = 'block';
+        document.getElementById('messageError').textContent = '❌ ' + error.message;
+      } finally {
+        document.getElementById('sendingIndicator').style.display = 'none';
+      }
+    });
+
+    // ===== UI FUNCTIONS =====
+
+    /**
+     * Display a message in the chat
+     */
+    async function displayMessage(msg) {
+      const messagesContainer = document.getElementById('messagesList');
+
+      const messageEl = document.createElement('div');
+      messageEl.className = 'message-wrapper ' + (msg.isPrivate ? 'private-message' : 'group-message');
+      messageEl.id = 'msg-' + msg._id;
+
+      const isSent = msg.sender === username;
+      const timestamp = new Date(msg.timestamp).toLocaleTimeString();
+
+      messageEl.innerHTML = `
+        <div class="message ${isSent ? 'sent' : 'received'}">
+          <div class="message-header">
+            <strong>${msg.sender}</strong>
+            ${msg.isPrivate ? '<span class="badge badge-private">🔒 Private to ' + msg.receiver + '</span>' : ''}
+            <span class="timestamp">${timestamp}</span>
+          </div>
+          <div class="message-content">
+            <p class="decrypted-text">${escapeHtml(msg.decryptedText)}</p>
+          </div>
+          <div class="message-footer">
+            <span class="encrypted-badge" title="This message is encrypted">🔒 Encrypted</span>
+            <button class="btn-toggle-encrypted" onclick="toggleEncrypted(this)">
+              Show Encrypted
+            </button>
+          </div>
+          <div class="encrypted-text" style="display: none;">
+            <pre>${escapeHtml(msg.encryptedText)}</pre>
+          </div>
+        </div>
+      `;
+
+      messagesContainer.appendChild(messageEl);
+      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+
+    /**
+     * Display system message (user joined, etc.)
+     */
+    function displaySystemMessage(message, type) {
+      const messagesContainer = document.getElementById('messagesList');
+      const systemEl = document.createElement('div');
+      systemEl.className = 'system-message system-' + type;
+      systemEl.innerHTML = `<p>${message}</p>`;
+      messagesContainer.appendChild(systemEl);
+      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+
+    /**
+     * Toggle encrypted text visibility
+     */
+    function toggleEncrypted(button) {
+      const messageEl = button.closest('.message');
+      const encryptedText = messageEl.querySelector('.encrypted-text');
+
+      if (encryptedText.style.display === 'none') {
+        encryptedText.style.display = 'block';
+        button.textContent = 'Hide Encrypted';
+      } else {
+        encryptedText.style.display = 'none';
+        button.textContent = 'Show Encrypted';
+      }
+    }
+
+    /**
+     * Add user to online users list
+     */
+    function addUserToList(user) {
+      const usersList = document.getElementById('usersList');
+      if (!Array.from(usersList.children).some(el => el.textContent.includes(user))) {
+        const li = document.createElement('li');
+        li.className = 'user-item';
+        li.innerHTML = `<span class="user-dot"></span><span class="user-name">${user}</span>`;
+        usersList.appendChild(li);
+      }
+    }
+
+    /**
+     * Remove user from online users list
+     */
+    function removeUserFromList(user) {
+      const usersList = document.getElementById('usersList');
+      Array.from(usersList.children).forEach(el => {
+        if (el.textContent.includes(user) && !el.textContent.includes('You')) {
+          el.remove();
+        }
+      });
+    }
+
+    /**
+     * Show typing indicator
+     */
+    function showTypingIndicator(user) {
+      document.getElementById('typingIndicator').style.display = 'block';
+    }
+
+    /**
+     * Hide typing indicator
+     */
+    function hideTypingIndicator() {
+      document.getElementById('typingIndicator').style.display = 'none';
+    }
+
+    /**
+     * Show alert/notification
+     */
+    function showAlert(message, type) {
+      const alert = document.createElement('div');
+      alert.className = 'alert alert-' + type;
+      alert.textContent = message;
+
+      const messageForm = document.getElementById('messageForm');
+      messageForm.parentElement.insertBefore(alert, messageForm);
+
+      setTimeout(() => alert.remove(), 5000);
+    }
+
+    /**
+     * Escape HTML to prevent XSS
+     */
+    function escapeHtml(text) {
+      const map = {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#039;'
+      };
+      return text.replace(/[&<>"']/g, m => map[m]);
+    }
+
+    /**
+     * Update character counter
+     */
+    function updateCharCounter() {
+      const count = document.getElementById('messageInput').value.length;
+      document.getElementById('charCounter').textContent = count;
+    }
+
+    document.getElementById('messageInput').addEventListener('input', updateCharCounter);
+    document.getElementById('messageInput').addEventListener('keydown', (e) => {
+      if (e.ctrlKey && e.key === 'Enter') {
+        document.getElementById('messageForm').dispatchEvent(new Event('submit'));
+      }
+    });
+
+    /**
+     * Show typing to others
+     */
+    document.getElementById('messageInput').addEventListener('input', () => {
+      socket.emit('user-typing', {
+        roomId,
+        username,
+        isTyping: true
+      });
+    });
+
+    /**
+     * Modal functions
+     */
+    function showKeyStats() {
+      document.getElementById('keyStatsModal').style.display = 'block';
+      document.getElementById('modalOverlay').style.display = 'block';
+    }
+
+    function closeModal() {
+      document.getElementById('keyStatsModal').style.display = 'none';
+      document.getElementById('modalOverlay').style.display = 'none';
+    }
+
+    /**
+     * Leave room
+     */
+    function leaveRoom() {
+      if (confirm('Leave this chat room?')) {
+        socket.disconnect();
+        window.location.href = '/';
+      }
+    }
+
+    // ===== INITIALIZATION ON PAGE LOAD =====
+    window.addEventListener('load', async () => {
+      console.log('🔒 Chat room initialized');
+
+      // Try to get encryption key from sessionStorage first
+      let storedKey = sessionStorage.getItem('encryptionKey');
+      
+      // If not in sessionStorage, try to get from page (passed by server)
+      if (!storedKey && typeof pageEncryptionKey !== 'undefined' && pageEncryptionKey) {
+        storedKey = pageEncryptionKey;
+        sessionStorage.setItem('encryptionKey', storedKey);
+        console.log('[KEY] Retrieved from page and stored in sessionStorage');
+      }
+
+      if (storedKey) {
+        await loadEncryptionKey(storedKey);
+      } else {
+        console.warn('[WARNING] No encryption key found');
+        showAlert('⚠️ Warning: No encryption key found. Messages cannot be decrypted.', 'warning');
+      }
+    });
+
+    // Auto-focus message input
+    document.getElementById('messageInput').focus();
+  </script>
+</body>
+</html>

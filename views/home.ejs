@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Secure Chat Room - Home</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="container">
+    <div class="home-wrapper">
+      <!-- Header -->
+      <header class="home-header">
+        <div class="logo">
+          <span class="lock-icon">🔒</span>
+          <h1>Secure Chat Room</h1>
+        </div>
+        <p class="subtitle">AES-256-GCM Encrypted Real-Time Messaging</p>
+      </header>
+
+      <!-- Main Content -->
+      <main class="home-main">
+        <!-- Create Room Section -->
+        <section class="home-section create-room-section">
+          <div class="section-header">
+            <h2>📝 Create a New Room</h2>
+            <p>Start a new secure chat room with encryption</p>
+          </div>
+
+          <form id="createRoomForm" class="form-group">
+            <div class="form-field">
+              <label for="createUsername">Your Username:</label>
+              <input
+                type="text"
+                id="createUsername"
+                name="username"
+                placeholder="Enter your username"
+                required
+                maxlength="20"
+                pattern="[a-zA-Z0-9_-]{3,20}"
+                title="3-20 characters, alphanumeric, underscore, hyphen"
+              />
+              <small>3-20 characters, no spaces</small>
+            </div>
+
+            <div class="form-field">
+              <label for="createRoomName">Room Name:</label>
+              <input
+                type="text"
+                id="createRoomName"
+                name="roomName"
+                placeholder="e.g., Team Brainstorm"
+                required
+                maxlength="30"
+              />
+              <small>Give your room a name (max 30 characters)</small>
+            </div>
+
+            <div class="form-footer">
+              <button type="submit" class="btn btn-primary">
+                <span class="btn-icon">✨</span> Create Room
+              </button>
+              <div id="createLoading" class="loading" style="display: none;">
+                <span class="spinner"></span> Creating room...
+              </div>
+            </div>
+
+            <div id="createError" class="alert alert-error" style="display: none;"></div>
+            <div id="createSuccess" class="alert alert-success" style="display: none;"></div>
+          </form>
+
+          <!-- Room Created Info -->
+          <div id="roomCreatedInfo" class="room-info-card" style="display: none;">
+            <h3>✓ Room Created Successfully!</h3>
+            <p>Share this Room ID with others:</p>
+            <div class="room-id-display">
+              <span id="displayRoomId"></span>
+              <button type="button" class="btn-copy" onclick="copyRoomId()">📋 Copy</button>
+            </div>
+            <button type="button" class="btn btn-primary" onclick="enterRoom()">
+              Enter Room →
+            </button>
+          </div>
+        </section>
+
+        <!-- Divider -->
+        <div class="section-divider">
+          <span>OR</span>
+        </div>
+
+        <!-- Join Room Section -->
+        <section class="home-section join-room-section">
+          <div class="section-header">
+            <h2>🔓 Join Existing Room</h2>
+            <p>Join a room using the Room ID shared by someone else</p>
+          </div>
+
+          <form id="joinRoomForm" class="form-group">
+            <div class="form-field">
+              <label for="joinUsername">Your Username:</label>
+              <input
+                type="text"
+                id="joinUsername"
+                name="username"
+                placeholder="Enter your username"
+                required
+                maxlength="20"
+                pattern="[a-zA-Z0-9_-]{3,20}"
+                title="3-20 characters, alphanumeric, underscore, hyphen"
+              />
+            </div>
+
+            <div class="form-field">
+              <label for="joinRoomId">Room ID:</label>
+              <input
+                type="text"
+                id="joinRoomId"
+                name="roomId"
+                placeholder="e.g., ABC12345"
+                required
+                maxlength="8"
+                style="text-transform: uppercase;"
+              />
+              <small>Ask the room creator for the Room ID</small>
+            </div>
+
+            <div class="form-footer">
+              <button type="submit" class="btn btn-primary">
+                <span class="btn-icon">🚪</span> Join Room
+              </button>
+              <div id="joinLoading" class="loading" style="display: none;">
+                <span class="spinner"></span> Joining...
+              </div>
+            </div>
+
+            <div id="joinError" class="alert alert-error" style="display: none;"></div>
+          </form>
+        </section>
+      </main>
+
+      <!-- Security Info Section -->
+      <section class="security-info">
+        <h3>🔐 Security Features</h3>
+        <ul>
+          <li><strong>AES-256-GCM Encryption:</strong> Every message is encrypted</li>
+          <li><strong>Symmetric Keys:</strong> Unique key per room for encryption/decryption</li>
+          <li><strong>Real-time Communication:</strong> Socket.io for instant messaging</li>
+          <li><strong>Private Messages:</strong> Send encrypted messages to specific users</li>
+          <li><strong>Authenticated Encryption:</strong> Prevents tampering and forgery</li>
+          <li><strong>Key Management:</strong> Keys stored securely in memory, never in database</li>
+        </ul>
+      </section>
+
+      <!-- Footer -->
+      <footer class="home-footer">
+        <p>Secure Group Chat System v1.0 | Built with Node.js + Express + Socket.io + MongoDB + AES-256 Encryption</p>
+      </footer>
+    </div>
+  </div>
+
+  <script>
+    // Store room ID for joining
+    let createdRoomId = null;
+
+    // Create Room Form Handler
+    document.getElementById('createRoomForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+
+      const username = document.getElementById('createUsername').value.trim();
+      const roomName = document.getElementById('createRoomName').value.trim();
+
+      // Show loading
+      document.getElementById('createLoading').style.display = 'flex';
+      document.getElementById('createError').style.display = 'none';
+      document.getElementById('createSuccess').style.display = 'none';
+
+      try {
+        const response = await fetch('/create-room', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ roomName, username })
+        });
+
+        const data = await response.json();
+
+        if (response.ok && data.success) {
+          createdRoomId = data.roomId;
+          console.log('Room created:', createdRoomId);
+
+          // Show room info
+          document.getElementById('roomCreatedInfo').style.display = 'block';
+          document.getElementById('displayRoomId').textContent = createdRoomId;
+          document.getElementById('createRoomForm').style.display = 'none';
+          document.getElementById('createSuccess').style.display = 'block';
+          document.getElementById('createSuccess').textContent = data.message;
+        } else {
+          throw new Error(data.error || 'Failed to create room');
+        }
+      } catch (error) {
+        console.error('Error:', error);
+        document.getElementById('createError').style.display = 'block';
+        document.getElementById('createError').textContent = '❌ ' + error.message;
+      } finally {
+        document.getElementById('createLoading').style.display = 'none';
+      }
+    });
+
+    // Join Room Form Handler
+    document.getElementById('joinRoomForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+
+      const username = document.getElementById('joinUsername').value.trim();
+      const roomId = document.getElementById('joinRoomId').value.trim().toUpperCase();
+
+      // Validate
+      if (username.length < 3 || username.length > 20) {
+        document.getElementById('joinError').style.display = 'block';
+        document.getElementById('joinError').textContent = '❌ Username must be 3-20 characters';
+        return;
+      }
+
+      if (roomId.length !== 8) {
+        document.getElementById('joinError').style.display = 'block';
+        document.getElementById('joinError').textContent = '❌ Room ID must be 8 characters';
+        return;
+      }
+
+      // Show loading
+      document.getElementById('joinLoading').style.display = 'flex';
+      document.getElementById('joinError').style.display = 'none';
+
+      try {
+        const response = await fetch('/join-room', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ roomId, username })
+        });
+
+        const data = await response.json();
+
+        if (response.ok && data.success) {
+          // Store credentials and redirect
+          sessionStorage.setItem('encryptionKey', data.encryptionKey);
+          sessionStorage.setItem('username', username);
+          window.location.href = `/room/${roomId}?username=${username}`;
+        } else {
+          throw new Error(data.error || 'Failed to join room');
+        }
+      } catch (error) {
+        console.error('Error:', error);
+        document.getElementById('joinError').style.display = 'block';
+        document.getElementById('joinError').textContent = '❌ ' + error.message;
+      } finally {
+        document.getElementById('joinLoading').style.display = 'none';
+      }
+    });
+
+    // Copy Room ID
+    function copyRoomId() {
+      navigator.clipboard.writeText(createdRoomId);
+      alert('Room ID copied to clipboard! 📋');
+    }
+
+    // Enter Room
+    function enterRoom() {
+      const username = document.getElementById('createUsername').value;
+      sessionStorage.setItem('username', username);
+      // Note: Encryption key will be fetched in the chatroom
+      window.location.href = `/room/${createdRoomId}?username=${username}`;
+    }
+
+    // Auto-focus first field
+    window.addEventListener('load', () => {
+      document.getElementById('createUsername').focus();
+    });
+  </script>
+</body>
+</html>
