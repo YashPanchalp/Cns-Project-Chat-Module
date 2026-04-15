@@ -52,7 +52,8 @@ const PORT = process.env.PORT || 3000;
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/secure-chat';
 
 // ===== MIDDLEWARE =====
-app.use(express.static('public'));
+// Serve static files (CSS, images, client-side JS)
+app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
