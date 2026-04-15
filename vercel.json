@@ -1,32 +1,18 @@
 {
   "version": 2,
-  "name": "secure-chat-system",
-  "buildCommand": "npm install",
-  "env": {
-    "NODE_ENV": "production"
-  },
-  "functions": {
-    "server.js": {
-      "memory": 1024,
-      "maxDuration": 60,
-      "runtime": "nodejs20.x"
+  "builds": [
+    {
+      "src": "server.js",
+      "use": "@vercel/node"
     }
-  },
+  ],
   "routes": [
     {
       "src": "/(.*)",
       "dest": "server.js"
     }
   ],
-  "headers": [
-    {
-      "source": "/api/(.*)",
-      "headers": [
-        {
-          "key": "Cache-Control",
-          "value": "no-store"
-        }
-      ]
-    }
-  ]
+  "env": {
+    "NODE_ENV": "production"
+  }
 }
