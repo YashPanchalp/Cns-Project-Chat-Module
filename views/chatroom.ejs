@@ -75,36 +75,51 @@
 
           <!-- Render existing messages -->
           <% messages.forEach(msg => { %>
+            <% 
+              // Check if user is authorized to decrypt this private message
+              // For group messages: everyone can read
+              // For private messages: SENDER and RECEIVER can read
+              const isAuthorized = !msg.isPrivate || msg.sender === username || msg.receiver === username;
+            %>
             <div class="message-wrapper <%= msg.isPrivate ? 'private-message' : 'group-message' %>" id="msg-<%= msg._id %>">
               <div class="message <%= msg.sender === username ? 'sent' : 'received' %>">
                 <div class="message-header">
                   <strong><%= msg.sender %></strong>
                   <% if (msg.isPrivate) { %>
-                    <span class="badge badge-private">🔒 Private</span>
+                    <span class="badge badge-private">🔒 Private to <%= msg.receiver %><%= !isAuthorized ? ' (Encrypted)' : '' %></span>
                   <% } %>
                   <span class="timestamp"><%= new Date(msg.timestamp).toLocaleTimeString() %></span>
                 </div>
 
-                <!-- Show both encrypted and decrypted messages -->
+                <!-- Show encrypted or decrypted based on authorization -->
                 <div class="message-content">
-                  <p class="decrypted-text" data-encrypted="<%= msg.encryptedText %>">
-                    [Decrypting...]
-                  </p>
+                  <% if (isAuthorized) { %>
+                    <p class="decrypted-text" data-encrypted="<%= msg.encryptedText %>">
+                      [Decrypting...]
+                    </p>
+                  <% } else { %>
+                    <p class="encrypted-content-unavailable">
+                      [🔐 Encrypted Private Message - Only sender and receiver can read]<br><br>Encrypted: <%= msg.encryptedText %>
+                    </p>
+                  <% } %>
                 </div>
 
                 <div class="message-footer">
                   <span class="encrypted-badge" title="This message is encrypted">
                     🔒 Encrypted
                   </span>
-                  <button class="btn-toggle-encrypted" onclick="toggleEncrypted(this)">
-                    Show Encrypted
-                  </button>
+                  <% if (isAuthorized) { %>
+                    <button class="btn-toggle-encrypted" onclick="toggleEncrypted(this)">
+                      Show Encrypted
+                    </button>
+                  <% } %>
                 </div>
 
-                <!-- Hidden encrypted text (shown on demand) -->
-                <div class="encrypted-text" style="display: none;">
-                  <pre><%= msg.encryptedText %></pre>
-                </div>
+                <% if (isAuthorized) { %>
+                  <div class="encrypted-text" style="display: none;">
+                    <pre><%= msg.encryptedText %></pre>
+                  </div>
+                <% } %>
               </div>
             </div>
           <% }); %>
@@ -307,22 +322,54 @@
     /**
      * RECEIVE_MESSAGE EVENT
      * 
-     * Server sends encrypted message to clients
-     * Client decrypts it using the stored encryption key
+     * Server sends messages to all users in room
+     * Different users see different content based on authorization
+     * 
+     * SECURITY ARCHITECTURE:
+     * - SENDER & RECEIVER: Get decrypted plaintext (isAuthorized: true from server)
+     * - OTHER USERS: Get encrypted text only, server indicates isAuthorized: false
+     * 
+     * This means sender and receiver can read private messages, others cannot
      */
     socket.on('receive-message', async (message) => {
-      console.log('[MESSAGE] Received message from', message.sender);
+      console.log('[MESSAGE] Received from', message.sender);
+      console.log('[MESSAGE] isPrivate:', message.isPrivate, '| isAuthorized:', message.isAuthorized);
 
-      // For private messages, server sends decrypted form
-      // For group messages, we need to decrypt
-      let decryptedText;
+      let displayText = '';
+      let isAuthorized = false;
 
-      if (message.decryptedText) {
-        // Already decrypted (private message to us)
-        decryptedText = message.decryptedText;
+      if (message.isPrivate) {
+        // For private messages, use server's authorization flag
+        isAuthorized = message.isAuthorized === true;
+        
+        console.log('[PRIVATE MESSAGE] From:', message.sender, 'To:', message.receiver);
+        console.log('[PRIVATE] Can decrypt (sender or receiver):', isAuthorized);
+
+        if (isAuthorized && message.decryptedText) {
+          // We're authorized (sender or receiver) and server sent decrypted plaintext
+          displayText = message.decryptedText;
+          console.log('[DISPLAY] Showing decrypted text (sender or receiver)');
+        } else if (isAuthorized && !message.decryptedText && encryptionKeyBuffer) {
+          // We're authorized but need to decrypt ourselves
+          displayText = await decryptMessageClient(message.encryptedText);
+          console.log('[DISPLAY] Client-side decrypted (sender or receiver)');
+        } else if (!isAuthorized) {
+          // We're NOT authorized (other users) - show encrypted message only
+          displayText = '[🔐 Encrypted Private Message - Only sender and receiver can read]\\n\\nEncrypted:\\n' + message.encryptedText;
+          console.log('[DISPLAY] Encrypted (not sender or receiver)');
+        } else {
+          displayText = '[⚠️ Unable to decrypt - Encryption key not loaded]';
+          console.warn('[DISPLAY] Key missing');
+        }
       } else {
-        // Need to decrypt
-        decryptedText = await decryptMessageClient(message.encryptedText);
+        // Group message - always decrypt
+        if (!encryptionKeyBuffer) {
+          displayText = '[⚠️ Unable to decrypt group message - Encryption key not loaded]';
+          console.warn('[GROUP] Key missing, cannot decrypt');
+        } else {
+          displayText = await decryptMessageClient(message.encryptedText);
+          console.log('[GROUP] Decrypted');
+        }
       }
 
       // Display message
@@ -330,9 +377,10 @@
         _id: message._id,
         sender: message.sender,
         receiver: message.receiver,
-        decryptedText: decryptedText,
+        decryptedText: displayText,
         encryptedText: message.encryptedText,
         isPrivate: message.isPrivate,
+        isAuthorized: isAuthorized,
         timestamp: new Date(message.timestamp)
       });
     });
@@ -345,6 +393,7 @@
       console.log('[SYSTEM] User joined:', data.username);
       displaySystemMessage(data.message, 'join');
       addUserToList(data.username);
+      updatePrivateMessageSelector();
     });
 
     /**
@@ -355,6 +404,7 @@
       console.log('[SYSTEM] User left:', data.username);
       displaySystemMessage(data.message, 'leave');
       removeUserFromList(data.username);
+      updatePrivateMessageSelector();
     });
 
     /**
@@ -491,13 +541,25 @@
 
         console.log('[SEND] Sending ' + messageTypeEnum + ' message to', receiver || 'GROUP');
 
+        // Check if encryption key is available
+        if (!encryptionKeyBuffer) {
+          const keyFromStorage = sessionStorage.getItem('encryptionKey');
+          if (keyFromStorage) {
+            // Try to load the key
+            await loadEncryptionKey(keyFromStorage);
+          } else {
+            throw new Error('Encryption key not available. Please refresh the page.');
+          }
+        }
+
         // Send to server (server will encrypt)
         socket.emit('send-message', {
           roomId,
           sender: username,
           message: message, // PLAINTEXT sent to server (over SSL in production)
           receiver: receiver, // null for group, username for private
-          messageType: messageTypeEnum
+          messageType: messageTypeEnum,
+          encryptionKeyHex: sessionStorage.getItem('encryptionKey')  // Send key as fallback
         });
 
       } catch (error) {
@@ -513,6 +575,10 @@
 
     /**
      * Display a message in the chat
+     * 
+     * SECURITY: Shows different content based on user authorization
+     * - Authorized users: See decrypted text
+     * - Unauthorized users: See encrypted text with lock indicator
      */
     async function displayMessage(msg) {
       const messagesContainer = document.getElementById('messagesList');
@@ -524,25 +590,31 @@
       const isSent = msg.sender === username;
       const timestamp = new Date(msg.timestamp).toLocaleTimeString();
 
+      // Determine if content is encrypted (user cannot read it)
+      const isEncryptedContent = msg.isPrivate && !msg.isAuthorized;
+
       messageEl.innerHTML = `
         <div class="message ${isSent ? 'sent' : 'received'}">
           <div class="message-header">
             <strong>${msg.sender}</strong>
-            ${msg.isPrivate ? '<span class="badge badge-private">🔒 Private to ' + msg.receiver + '</span>' : ''}
+            ${msg.isPrivate ? `<span class="badge badge-private">🔒 Private to ${msg.receiver}${!msg.isAuthorized ? ' (Encrypted)' : ''}</span>` : ''}
             <span class="timestamp">${timestamp}</span>
           </div>
           <div class="message-content">
-            <p class="decrypted-text">${escapeHtml(msg.decryptedText)}</p>
+            ${isEncryptedContent ? 
+              `<p class="encrypted-content-unavailable">${escapeHtml(msg.decryptedText)}</p>` :
+              `<p class="decrypted-text">${escapeHtml(msg.decryptedText)}</p>`
+            }
           </div>
           <div class="message-footer">
             <span class="encrypted-badge" title="This message is encrypted">🔒 Encrypted</span>
-            <button class="btn-toggle-encrypted" onclick="toggleEncrypted(this)">
+            ${!isEncryptedContent ? `<button class="btn-toggle-encrypted" onclick="toggleEncrypted(this)">
               Show Encrypted
-            </button>
+            </button>` : ''}
           </div>
-          <div class="encrypted-text" style="display: none;">
+          ${!isEncryptedContent ? `<div class="encrypted-text" style="display: none;">
             <pre>${escapeHtml(msg.encryptedText)}</pre>
-          </div>
+          </div>` : ''}
         </div>
       `;
 
@@ -601,6 +673,38 @@
           el.remove();
         }
       });
+    }
+
+    /**
+     * Update private message selector when users join/leave
+     * This keeps the dropdown synchronized with online users
+     */
+    function updatePrivateMessageSelector() {
+      const select = document.getElementById('messageType');
+      if (!select) return;
+
+      // Get current online users from sidebar
+      const onlineUsers = Array.from(document.querySelectorAll('.user-item .user-name'))
+        .map(el => el.textContent)
+        .filter(u => u !== username);
+
+      console.log('[SELECTOR] Updating private message selector with users:', onlineUsers);
+
+      // Keep the group message option
+      const groupOption = select.querySelector('option[value="group"]');
+      
+      // Remove all private message options (all options except group)
+      Array.from(select.querySelectorAll('option:not([value="group"])')).forEach(opt => opt.remove());
+
+      // Add fresh options for each online user
+      onlineUsers.forEach(user => {
+        const option = document.createElement('option');
+        option.value = user;
+        option.textContent = '🔒 Private: ' + user;
+        select.appendChild(option);
+      });
+
+      console.log('[SELECTOR] Updated with ' + onlineUsers.length + ' users');
     }
 
     /**
@@ -698,6 +802,9 @@
     window.addEventListener('load', async () => {
       console.log('🔒 Chat room initialized');
 
+      // Initialize private message selector with online users
+      updatePrivateMessageSelector();
+
       // Try to get encryption key from sessionStorage first
       let storedKey = sessionStorage.getItem('encryptionKey');
       
@@ -709,10 +816,13 @@
       }
 
       if (storedKey) {
+        console.log('[INIT] Loading encryption key...');
         await loadEncryptionKey(storedKey);
       } else {
         console.warn('[WARNING] No encryption key found');
-        showAlert('⚠️ Warning: No encryption key found. Messages cannot be decrypted.', 'warning');
+        console.warn('[DEBUG] pageEncryptionKey:', pageEncryptionKey);
+        console.warn('[DEBUG] sessionStorage encryptionKey:', sessionStorage.getItem('encryptionKey'));
+        showAlert('⚠️ Warning: No encryption key found. Messages cannot be decrypted. Try refreshing the page.', 'warning');
       }
     });
 

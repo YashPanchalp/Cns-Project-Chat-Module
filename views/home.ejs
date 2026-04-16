@@ -186,6 +186,12 @@
         if (response.ok && data.success) {
           createdRoomId = data.roomId;
           console.log('Room created:', createdRoomId);
+          
+          // Store encryption key
+          if (data.encryptionKey) {
+            sessionStorage.setItem('encryptionKey', data.encryptionKey);
+            console.log('[KEY] Encryption key stored in sessionStorage');
+          }
 
           // Show room info
           document.getElementById('roomCreatedInfo').style.display = 'block';

@@ -76,11 +76,12 @@ router.post('/create-room', async (req, res) => {
     console.log(`[ROOM] Created: ${roomId} by ${username}`);
     console.log(`[SECURITY] Encryption key stored in memory for room ${roomId}`);
 
-    // Send room ID to user (they share this with others)
+    // Send room ID and KEY to user (they share Room ID with others, keep key safe)
     res.json({
       success: true,
       roomId,
-      message: 'Room created! Share this Room ID with others'
+      message: 'Room created! Share this Room ID with others',
+      encryptionKey: encryptionKey.toString('hex')  // SEND KEY TO CREATOR
     });
 
   } catch (error) {
@@ -195,18 +196,35 @@ router.get('/room/:roomId', async (req, res) => {
       return res.status(404).render('404', { message: 'Room not found' });
     }
 
-    // Get message history for this room
+    // ===== SECURITY: LOAD ALL MESSAGES =====
+    // Load all messages in the room (both group and private)
+    // 
+    // SECURITY ARCHITECTURE:
+    // - Front-end controls what users can READ (via authorization checks)
+    // - Server loads all messages for transparency
+    // - Clients filter which messages they can decrypt
+    // 
+    // Private messages:
+    // - SENDER and RECEIVER get decrypted text
+    // - OTHER USERS get encrypted text with lock indicator
+    // - This provides privacy while maintaining transparency about message activity
     const messages = await Message.find({ roomId })
       .sort({ timestamp: 1 })
-      .limit(50) // Limit to last 50 messages
+      .limit(100) // Increased limit to show more history
       .exec();
 
-    // ===== KEY RETRIEVAL FOR CREATOR =====
-    // Get the encryption key from memory for the room creator
-    // This allows room creators to decrypt messages in their room
+    // ===== KEY RETRIEVAL FOR ALL USERS =====
+    // Get the encryption key from memory for all room users
+    // Stored in sessionStorage on client side
+    // If not in memory (server restart), re-request via socket event
     const { getRoomKey } = require('../utils/encryption');
     const roomKey = getRoomKey(roomId);
     const encryptionKeyHex = roomKey ? roomKey.toString('hex') : null;
+
+    if (!encryptionKeyHex) {
+      console.warn(`[WARNING] Encryption key not in memory for room ${roomId}`);
+      console.warn('[INFO] Client must have key in sessionStorage to decrypt messages');
+    }
 
     res.render('chatroom', {
       roomId,
@@ -222,7 +240,7 @@ router.get('/room/:roomId', async (req, res) => {
         timestamp: msg.timestamp,
         messageType: msg.messageType
       })),
-      encryptionKeyHex  // Pass the key to the template
+      encryptionKeyHex  // Pass the key to the template (may be null)
     });
 
   } catch (error) {

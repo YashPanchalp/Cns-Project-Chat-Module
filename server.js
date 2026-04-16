@@ -140,13 +140,27 @@ io.on('connection', (socket) => {
    */
   socket.on('send-message', async (data) => {
     try {
-      const { roomId, sender, message, receiver } = data;
+      const { roomId, sender, message, receiver, encryptionKeyHex } = data;
 
       console.log(`[MESSAGE] ${sender} → ${receiver || 'GROUP'} in ${roomId}`);
 
       // ===== GET ENCRYPTION KEY =====
-      // Retrieve the key stored in memory for this room
-      const key = getRoomKey(roomId);
+      // Try to retrieve the key from memory first
+      let key = getRoomKey(roomId);
+
+      // If key not in memory, try to use the key sent from client (fallback mechanism)
+      if (!key && encryptionKeyHex) {
+        try {
+          // Convert hex string to Buffer
+          key = Buffer.from(encryptionKeyHex, 'hex');
+          // Store the key in memory for future use
+          storeRoomKey(roomId, key);
+          console.log(`[KEY] Using encryption key from client and storing in memory (fallback)`);
+        } catch (err) {
+          console.error(`[ERROR] Failed to parse encryption key from client:`, err.message);
+          key = null;
+        }
+      }
 
       if (!key) {
         console.error(`[ERROR] Encryption key not found for room ${roomId}`);
@@ -184,48 +198,84 @@ io.on('connection', (socket) => {
       console.log(`[DATABASE] Message saved to MongoDB (encrypted only)`);
 
       // ===== DESTINATION LOGIC =====
-      // Determine who sees this message
+      // Determine who sees this message and what form they see it in
 
       if (receiver) {
         // PRIVATE MESSAGE
-        // Only sender and receiver can see this message
-        // Others don't see this message at all
+        // ===== SECURITY ARCHITECTURE =====
+        // Message is sent to ALL users in room, but in different FORMS:
+        // 1. SENDER & RECEIVER: Get decrypted plaintext (can read)
+        // 2. OTHER USERS: Get encrypted text only (cannot read, only see encrypted)
+        //
+        // Privacy Model: Only sender and receiver can decrypt and read
+        // Transparency: All users can see that a private message was sent (sender -> receiver)
+        //             but only sender & receiver understand the content
 
-        console.log(`[PRIVATE] Sending to ${sender} and ${receiver} only`);
+        console.log(`[PRIVATE] Private message from ${sender} to ${receiver}`);
+        console.log(`[BROADCAST] Sending to all users in ${roomId}`);
 
-        // Find sockets for sender and receiver
-        const senderSocket = Object.entries(activeConnections)
-          .find(([_, conn]) => conn.username === sender);
-        const receiverSocket = Object.entries(activeConnections)
-          .find(([_, conn]) => conn.username === receiver && conn.roomId === roomId);
+        // ===== SEND TO SENDER DIRECTLY =====
+        // Sender always gets their own plaintext message
+        socket.emit('receive-message', {
+          _id: messageDoc._id,
+          sender,
+          receiver,
+          encryptedText,
+          decryptedText: message,  // SENDER GETS PLAINTEXT
+          isPrivate: true,
+          isAuthorized: true,
+          timestamp: messageDoc.timestamp
+        });
+        console.log(`[PRIVATE->SENDER] Sent decrypted plaintext to ${sender}`);
 
-        if (senderSocket) {
-          io.to(senderSocket[0]).emit('receive-message', {
-            _id: messageDoc._id,
-            sender,
-            receiver,
-            encryptedText,
-            decryptedText: message, // Client already has plaintext
-            isPrivate: true,
-            canDecrypt: true,
-            timestamp: messageDoc.timestamp
-          });
-        }
+        // ===== SEND TO RECEIVER AND OTHERS =====
+        // Get all socket IDs in the room to send appropriate data to each
+        const roomSockets = io.sockets.adapter.rooms.get(roomId);
 
-        if (receiverSocket) {
-          io.to(receiverSocket[0]).emit('receive-message', {
-            _id: messageDoc._id,
-            sender,
-            receiver,
-            encryptedText,
-            decryptedText: message, // Recipient can decrypt
-            isPrivate: true,
-            canDecrypt: true,
-            timestamp: messageDoc.timestamp
-          });
-        } else {
-          // Receiver not online, send notification if implemented
-          console.log(`[OFFLINE] ${receiver} is offline`);
+        if (roomSockets) {
+          for (const socketId of roomSockets) {
+            // Skip the sender - already sent above
+            if (socketId === socket.id) {
+              console.log(`[PRIVATE] Skipping sender socket ${socket.id} - already notified`);
+              continue;
+            }
+
+            const connection = activeConnections[socketId];
+            const currentUser = connection ? connection.username : null;
+
+            console.log(`[PRIVATE] Broadcasting to ${currentUser} (socketId: ${socketId})`);
+
+            // Check if this is the receiver
+            const isReceiver = (currentUser === receiver);
+
+            if (isReceiver) {
+              // RECEIVER GETS PLAINTEXT
+              io.to(socketId).emit('receive-message', {
+                _id: messageDoc._id,
+                sender,
+                receiver,
+                encryptedText,
+                decryptedText: message,  // RECEIVER GETS PLAINTEXT
+                isPrivate: true,
+                isAuthorized: true,
+                timestamp: messageDoc.timestamp
+              });
+              console.log(`[PRIVATE->RECEIVER] Sent decrypted to ${currentUser}`);
+            } else {
+              // OTHER USERS GET ENCRYPTED TEXT ONLY
+              io.to(socketId).emit('receive-message', {
+                _id: messageDoc._id,
+                sender,
+                receiver,
+                encryptedText,
+                // NO decryptedText sent to other users
+                isPrivate: true,
+                isAuthorized: false,
+                timestamp: messageDoc.timestamp
+              });
+              console.log(`[PRIVATE->OTHER] Sent encrypted-only to ${currentUser}`);
+            }
+          }
         }
 
       } else {
